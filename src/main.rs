@@ -246,10 +246,10 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
     let mut last_timestamp = now;
     if let Some(ref logs) = initial_response.logs {
         for log in logs {
-            if let Some(content) = &log.content
-                && let Some(timestamp) = content.timestamp
-            {
-                last_timestamp = timestamp;
+            if let Some(content) = &log.content {
+                if let Some(timestamp) = content.timestamp {
+                    last_timestamp = timestamp;
+                }
             }
             let json = serde_json::to_string(&log)?;
             println!("{}", json);
@@ -288,10 +288,10 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
             } else {
                 for log in logs {
                     // Update last_timestamp to the latest log timestamp
-                    if let Some(content) = &log.content
-                        && let Some(timestamp) = content.timestamp
-                    {
-                        last_timestamp = timestamp;
+                    if let Some(content) = &log.content {
+                        if let Some(timestamp) = content.timestamp {
+                            last_timestamp = timestamp;
+                        }
                     }
 
                     let json = serde_json::to_string(&log)?;
