@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use clap::{Parser, Subcommand};
 use datadog_api_client::datadog;
 use datadog_api_client::datadog::APIKey;
@@ -7,6 +7,7 @@ use datadog_api_client::datadogV1::model::LogsListRequest;
 use datadog_api_client::datadogV1::model::LogsListRequestTime;
 use datadog_api_client::datadogV1::model::LogsSort;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -242,21 +243,31 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
         .await
         .map_err(|e| DdLogsError::DatadogError(format!("{:#?}", e)))?;
 
-    // Output initial logs and track last timestamp
+    // Output initial logs and track last timestamp and seen IDs with timestamps
     let mut last_timestamp = now;
+    let mut seen_ids: HashMap<String, DateTime<Utc>> = HashMap::new();
+
     if let Some(ref logs) = initial_response.logs {
         for log in logs {
-            if let Some(content) = &log.content {
+            let log_timestamp = if let Some(content) = &log.content {
                 if let Some(timestamp) = content.timestamp {
                     last_timestamp = timestamp;
+                    timestamp
+                } else {
+                    last_timestamp
                 }
+            } else {
+                last_timestamp
+            };
+
+            if let Some(ref id) = log.id {
+                seen_ids.insert(id.clone(), log_timestamp);
             }
+
             let json = serde_json::to_string(&log)?;
             println!("{}", json);
         }
     }
-
-    // Now poll forward from the last timestamp
 
     loop {
         let now = Utc::now();
@@ -267,7 +278,6 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
             .sort(LogsSort::TIME_ASCENDING)
             .limit(args.limit);
 
-        // If no filters provided, use a wildcard query
         if args.service.is_none()
             && args.source.is_none()
             && args.host.is_none()
@@ -281,29 +291,44 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
             .await
             .map_err(|e| DdLogsError::DatadogError(format!("{:#?}", e)))?;
 
-        // Output each log as a single line of JSON
         if let Some(ref logs) = response.logs {
             if logs.is_empty() {
                 last_timestamp = now;
             } else {
+                let mut new_last_timestamp = last_timestamp;
+
                 for log in logs {
-                    // Update last_timestamp to the latest log timestamp
-                    if let Some(content) = &log.content {
-                        if let Some(timestamp) = content.timestamp {
-                            last_timestamp = timestamp;
+                    let log_timestamp = if let Some(content) = &log.content {
+                        content.timestamp.unwrap_or(last_timestamp)
+                    } else {
+                        last_timestamp
+                    };
+
+                    if let Some(ref id) = log.id {
+                        if seen_ids.contains_key(id) {
+                            continue;
                         }
+                        seen_ids.insert(id.clone(), log_timestamp);
+                    }
+
+                    if log_timestamp > new_last_timestamp {
+                        new_last_timestamp = log_timestamp;
                     }
 
                     let json = serde_json::to_string(&log)?;
                     println!("{}", json);
                 }
+
+                // Clean up IDs older than the new last_timestamp
+                if new_last_timestamp > last_timestamp {
+                    seen_ids.retain(|_, &mut ts| ts >= new_last_timestamp);
+                    last_timestamp = new_last_timestamp;
+                }
             }
         } else {
-            // Update timestamp if no logs were found
             last_timestamp = now;
         }
 
-        // Sleep for the specified interval
         tokio::time::sleep(tokio::time::Duration::from_secs(args.interval)).await;
     }
 }
