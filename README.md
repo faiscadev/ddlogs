@@ -92,6 +92,24 @@ ddlogs -f --service email-api
 ddlogs -f --interval 15
 ```
 
+### Query historical logs
+
+```bash
+# Last 24 hours
+ddlogs --since 24h
+
+# Last 7 days
+ddlogs --since 7d --service api
+
+# Specific time range (ISO 8601 format)
+ddlogs --from 2024-01-15T00:00:00Z --to 2024-01-15T12:00:00Z
+
+# Since a duration ago until a specific time
+ddlogs --since 2d --to 2024-01-16T00:00:00Z
+```
+
+Supported duration units for `--since`: `s` (seconds), `m` (minutes), `h` (hours), `d` (days), `w` (weeks).
+
 ### Limit number of results
 
 ```bash
@@ -121,6 +139,9 @@ Options:
   -q, --query <QUERY>        Raw Datadog query string
   -l, --limit <LIMIT>        Number of logs to retrieve [default: 100]
       --interval <INTERVAL>  Poll interval in seconds for follow mode [default: 12]
+      --from <FROM>          Start time (ISO 8601, e.g., "2024-01-15T10:00:00Z")
+      --to <TO>              End time (ISO 8601, e.g., "2024-01-15T11:00:00Z")
+      --since <SINCE>        Relative time range (e.g., "1h", "30m", "7d", "2w")
   -h, --help                 Print help
 ```
 

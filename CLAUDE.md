@@ -8,13 +8,14 @@ ddlogs is a CLI tool for tailing and querying Datadog logs, similar to `tail -f`
 
 ## Architecture
 
-**Single binary structure:** The entire application lives in `src/main.rs` (~400 lines). This is intentional - the tool is simple enough not to require module separation.
+**Single binary structure:** The entire application lives in `src/main.rs` (~500 lines). This is intentional - the tool is simple enough not to require module separation.
 
 **Key components:**
 - `Config` struct: Handles credential loading from both `~/.config/ddlogs/config.toml` and environment variables (`DD_API_KEY`, `DD_APP_KEY`, `DD_SITE`). Env vars override config file values.
 - `Args` struct: CLI argument parsing via clap's derive macros
-- `fetch_logs()`: One-time log query (default: last hour)
+- `fetch_logs()`: One-time log query (default: last hour, configurable via `--since`, `--from`, `--to`)
 - `follow_logs()`: Continuous polling mode that tracks timestamps to fetch only new logs
+- `get_time_range()`: Parses time range from CLI args (`--since`, `--from`, `--to`)
 - `configure()`: Interactive credential setup command
 
 **Datadog API integration:** Uses the `datadog-api-client` crate v0.24. The app configures the client with API/app keys and Datadog site, then uses `LogsAPI::list_logs()` to query logs.

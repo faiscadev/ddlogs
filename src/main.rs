@@ -90,6 +90,18 @@ struct Args {
     /// Poll interval in seconds for follow mode (default: 12s to respect Datadog's 300 req/hour limit)
     #[arg(long, default_value = "12")]
     interval: u64,
+
+    /// Start time for log query (ISO 8601 format, e.g., "2024-01-15T10:00:00Z")
+    #[arg(long)]
+    from: Option<String>,
+
+    /// End time for log query (ISO 8601 format, e.g., "2024-01-15T11:00:00Z")
+    #[arg(long)]
+    to: Option<String>,
+
+    /// Relative time range (e.g., "1h", "30m", "7d", "2w")
+    #[arg(long)]
+    since: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -114,6 +126,9 @@ enum DdLogsError {
 
     #[error("TOML serialization error: {0}")]
     TomlError(#[from] toml::ser::Error),
+
+    #[error("Invalid time format: {0}")]
+    InvalidTimeFormat(String),
 }
 
 fn build_query(args: &Args) -> String {
@@ -140,6 +155,93 @@ fn build_query(args: &Args) -> String {
     } else {
         parts.join(" ")
     }
+}
+
+/// Parse a relative duration string like "1h", "30m", "7d", "2w"
+fn parse_duration(s: &str) -> Result<Duration, DdLogsError> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(DdLogsError::InvalidTimeFormat(
+            "empty duration string".to_string(),
+        ));
+    }
+
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let num: i64 = num_str.parse().map_err(|_| {
+        DdLogsError::InvalidTimeFormat(format!("invalid number in duration: {}", s))
+    })?;
+
+    match unit {
+        "s" => Ok(Duration::seconds(num)),
+        "m" => Ok(Duration::minutes(num)),
+        "h" => Ok(Duration::hours(num)),
+        "d" => Ok(Duration::days(num)),
+        "w" => Ok(Duration::weeks(num)),
+        _ => Err(DdLogsError::InvalidTimeFormat(format!(
+            "unknown duration unit '{}'. Use s, m, h, d, or w",
+            unit
+        ))),
+    }
+}
+
+/// Get the time range based on CLI arguments
+fn get_time_range(args: &Args) -> Result<(DateTime<Utc>, DateTime<Utc>), DdLogsError> {
+    let now = Utc::now();
+
+    // --since takes precedence if provided
+    if let Some(since) = &args.since {
+        let duration = parse_duration(since)?;
+        let from = now - duration;
+        let to = args
+            .to
+            .as_ref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|_| {
+                        DdLogsError::InvalidTimeFormat(format!(
+                            "invalid --to format: {}. Use ISO 8601 (e.g., 2024-01-15T10:00:00Z)",
+                            s
+                        ))
+                    })
+            })
+            .transpose()?
+            .unwrap_or(now);
+        return Ok((from, to));
+    }
+
+    // If --from is provided
+    if let Some(from_str) = &args.from {
+        let from = DateTime::parse_from_rfc3339(from_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|_| {
+                DdLogsError::InvalidTimeFormat(format!(
+                    "invalid --from format: {}. Use ISO 8601 (e.g., 2024-01-15T10:00:00Z)",
+                    from_str
+                ))
+            })?;
+
+        let to = args
+            .to
+            .as_ref()
+            .map(|s| {
+                DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|_| {
+                        DdLogsError::InvalidTimeFormat(format!(
+                            "invalid --to format: {}. Use ISO 8601 (e.g., 2024-01-15T10:00:00Z)",
+                            s
+                        ))
+                    })
+            })
+            .transpose()?
+            .unwrap_or(now);
+
+        return Ok((from, to));
+    }
+
+    // Default: last 1 hour
+    Ok((now - Duration::hours(1), now))
 }
 
 fn create_api(config: &Config) -> LogsAPI {
@@ -180,11 +282,8 @@ async fn fetch_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
     let api = create_api(config);
     let query_str = build_query(args);
 
-    // Default to last 1 hour
-    let now = Utc::now();
-    let one_hour_ago = now - Duration::hours(1);
-
-    let time = LogsListRequestTime::new(one_hour_ago, now);
+    let (from, to) = get_time_range(args)?;
+    let time = LogsListRequestTime::new(from, to);
 
     let mut body = LogsListRequest::new(time)
         .query(query_str)
@@ -220,10 +319,9 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
     let api = create_api(config);
     let query_str = build_query(args);
 
-    // First, fetch recent logs (last hour) to show initial state
-    let now = Utc::now();
-    let one_hour_ago = now - Duration::hours(1);
-    let time = LogsListRequestTime::new(one_hour_ago, now);
+    // First, fetch logs based on time range arguments (or default last hour)
+    let (from, to) = get_time_range(args)?;
+    let time = LogsListRequestTime::new(from, to);
 
     let mut body = LogsListRequest::new(time)
         .query(query_str.clone())
@@ -244,7 +342,7 @@ async fn follow_logs(args: &Args, config: &Config) -> Result<(), DdLogsError> {
         .map_err(|e| DdLogsError::DatadogError(format!("{:#?}", e)))?;
 
     // Output initial logs and track last timestamp and seen IDs with timestamps
-    let mut last_timestamp = now;
+    let mut last_timestamp = to;
     let mut seen_ids: HashMap<String, DateTime<Utc>> = HashMap::new();
 
     if let Some(ref logs) = initial_response.logs {
